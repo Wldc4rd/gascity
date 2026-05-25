@@ -82,6 +82,74 @@ func TestResolveTemplateUsesWorkDirWithoutChangingRigIdentity(t *testing.T) {
 	}
 }
 
+func TestIssue2070RigScopedAgentInfersRigFromConcreteQualifiedName(t *testing.T) {
+	cityPath := t.TempDir()
+	writeTemplateResolveCityConfig(t, cityPath, "file")
+	rigRoot := filepath.Join(cityPath, "rigs", "thriva")
+	if err := os.MkdirAll(rigRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	params := &agentBuildParams{
+		cityName:   "city",
+		cityPath:   cityPath,
+		workspace:  &config.Workspace{Provider: "test"},
+		providers:  map[string]config.ProviderSpec{"test": {Command: "echo", PromptMode: "none"}},
+		lookPath:   func(string) (string, error) { return "/bin/echo", nil },
+		fs:         fsys.OSFS{},
+		rigs:       []config.Rig{{Name: "thriva", Path: rigRoot}},
+		beaconTime: time.Unix(0, 0),
+		beadNames:  make(map[string]string),
+		stderr:     io.Discard,
+	}
+
+	// Minimal #2070 shape:
+	//
+	//   [[rigs]]
+	//   name = "thriva"
+	//   includes = ["packs/devpipeline"]
+	//
+	//   # packs/devpipeline/agents/my_impl/agent.toml
+	//   scope = "rig"
+	//   work_dir = ".gc/worktrees/my_impl"
+	//
+	// The concrete session target is rig-qualified ("thriva/my_impl"), but
+	// the work_dir intentionally lives under the city. Rig env must still
+	// follow the concrete target, not the work_dir path.
+	agent := &config.Agent{
+		Name:    "my_impl",
+		Scope:   "rig",
+		WorkDir: ".gc/worktrees/my_impl",
+	}
+	tp, err := resolveTemplate(params, agent, "thriva/my_impl", nil)
+	if err != nil {
+		t.Fatalf("resolveTemplate: %v", err)
+	}
+
+	wantWorkDir := filepath.Join(cityPath, ".gc", "worktrees", "my_impl")
+	if tp.WorkDir != wantWorkDir {
+		t.Fatalf("WorkDir = %q, want %q", tp.WorkDir, wantWorkDir)
+	}
+	if tp.RigName != "thriva" {
+		t.Fatalf("RigName = %q, want thriva", tp.RigName)
+	}
+	if tp.RigRoot != rigRoot {
+		t.Fatalf("RigRoot = %q, want %q", tp.RigRoot, rigRoot)
+	}
+	if tp.Env["GC_RIG"] != "thriva" {
+		t.Fatalf("GC_RIG = %q, want thriva", tp.Env["GC_RIG"])
+	}
+	if tp.Env["GC_RIG_ROOT"] != rigRoot {
+		t.Fatalf("GC_RIG_ROOT = %q, want %q", tp.Env["GC_RIG_ROOT"], rigRoot)
+	}
+	if tp.Env["GC_BEADS_SCOPE_ROOT"] != rigRoot {
+		t.Fatalf("GC_BEADS_SCOPE_ROOT = %q, want %q", tp.Env["GC_BEADS_SCOPE_ROOT"], rigRoot)
+	}
+	if tp.Env["BEADS_DIR"] != filepath.Join(rigRoot, ".beads") {
+		t.Fatalf("BEADS_DIR = %q, want %q", tp.Env["BEADS_DIR"], filepath.Join(rigRoot, ".beads"))
+	}
+}
+
 func TestResolveTemplateUsesWorkDirForCityScopedAgents(t *testing.T) {
 	cityPath := t.TempDir()
 	writeTemplateResolveCityConfig(t, cityPath, "file")
